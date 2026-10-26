@@ -29,7 +29,7 @@ jobs:
         include:
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
-            args: --bundles nsis,msi
+            args: --bundles nsis,msi --config {"bundle":{"createUpdaterArtifacts":false}}
             bundle_dir: src-tauri/target/release/bundle
 
     steps:
