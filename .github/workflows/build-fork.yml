@@ -1,0 +1,134 @@
+name: Fork Build (unsigned)
+
+# Personal-fork packaging: no signing keys, no releases, no version checks.
+# Run manually from Actions -> Fork Build (unsigned) -> Run workflow.
+# Bundles are uploaded as workflow artifacts (retained 7 days).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_NAME: NyaTerm
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.platform }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+            bundle_dir: src-tauri/target/aarch64-apple-darwin/release/bundle
+
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+            bundle_dir: src-tauri/target/x86_64-apple-darwin/release/bundle
+
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: ""
+            bundle_dir: src-tauri/target/release/bundle
+
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            args: ""
+            bundle_dir: src-tauri/target/release/bundle
+
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: --bundles nsis,msi
+            bundle_dir: src-tauri/target/release/bundle
+
+          - platform: windows-latest
+            target: aarch64-pc-windows-msvc
+            args: --target aarch64-pc-windows-msvc --bundles nsis,msi
+            bundle_dir: src-tauri/target/aarch64-pc-windows-msvc/release/bundle
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        if: matrix.target != 'x86_64-unknown-linux-gnu' && matrix.target != 'x86_64-pc-windows-msvc'
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ./src-tauri -> target
+          key: fork-build-${{ matrix.platform }}-${{ matrix.target }}
+          cache-on-failure: false
+        env:
+          RUST_CACHE_COMPRESS: true
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install Linux dependencies
+        if: contains(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libudev-dev \
+            pkg-config \
+            build-essential \
+            curl \
+            wget \
+            file \
+            xdg-utils
+
+          if [ "${{ matrix.platform }}" = "ubuntu-22.04-arm" ]; then
+            sudo apt-get install -y libfuse2
+          fi
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        with:
+          includeUpdaterJson: false
+          args: ${{ matrix.args }}
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ matrix.target }}
+          path: ${{ matrix.bundle_dir }}
+          if-no-files-found: error
+          retention-days: 7

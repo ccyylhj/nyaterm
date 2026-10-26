@@ -13,7 +13,7 @@ use crate::error::{AppError, AppResult};
 use crate::utils::url::{join_api_base_url, normalize_api_base_url};
 
 use super::http::build_http_client;
-use super::model::ResolvedAiModel;
+use super::model::{ResolvedAiModel, apply_custom_headers};
 use super::parser::{trim_string_to_option, truncate_preview};
 use super::stream::{AiStreamResult, emit_stream_event};
 use super::types::{AiChatRequest, AiStreamEventPayload};
@@ -566,6 +566,7 @@ pub fn responses_request(
     {
         request = request.bearer_auth(key);
     }
+    request = apply_custom_headers(request, model.credential.as_ref())?;
     Ok(request)
 }
 
@@ -613,6 +614,7 @@ mod tests {
                 api_format: AiApiFormat::Responses,
                 base_url: base_url.map(str::to_string),
                 api_key: Some("key".to_string()),
+                extra_headers: Vec::new(),
                 enabled: true,
             }),
         }

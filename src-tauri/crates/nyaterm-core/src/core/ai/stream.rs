@@ -106,7 +106,7 @@ pub async fn run_model_stream(
     );
 
     let chat_req = ChatRequest::new(messages);
-    let chat_options = build_chat_options(settings);
+    let chat_options = build_chat_options(settings, Some(&resolved_model))?;
 
     let stream_result = tokio::time::timeout(
         Duration::from_millis(settings.timeout_ms),

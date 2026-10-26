@@ -109,6 +109,31 @@ pub fn reveal_ai_provider_api_key(credential_id: String) -> AppResult<String> {
     crypto::decrypt(encrypted_key)
 }
 
+#[tauri::command]
+pub fn reveal_ai_provider_header_value(
+    credential_id: String,
+    header_id: String,
+) -> AppResult<String> {
+    let settings = storage::load_settings_doc::<config::AppSettings>(SettingsDocKey::AppSettings)?;
+    let encrypted_value = settings
+        .ai
+        .provider_credentials
+        .iter()
+        .find(|credential| credential.id == credential_id)
+        .and_then(|credential| {
+            credential
+                .extra_headers
+                .iter()
+                .find(|header| header.id == header_id)
+                .map(|header| header.value.as_str())
+        })
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::Config("AI provider header value is not configured".to_string())
+        })?;
+    crypto::decrypt(encrypted_value)
+}
+
 use nyaterm_core::core::ai::catalog::{merge_model_discoveries, update_default_model_id};
 
 #[tauri::command]

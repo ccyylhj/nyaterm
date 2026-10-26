@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   BUILTIN_PROVIDERS,
+  credentialExtraHeaders,
   DEFAULT_AI_SETTINGS,
+  duplicateAiHttpHeaderNames,
+  isValidAiHttpHeaderName,
   localizeDefaultAiAction,
+  newAiHttpHeader,
+  normalizeAiHttpHeaders,
 } from "./aiSettings";
 
 describe("aiSettings Ollama defaults", () => {
@@ -100,5 +105,59 @@ describe("External MCP defaults", () => {
         enabled: true,
       });
     });
+  });
+});
+
+describe("custom AI request headers", () => {
+  it("creates headers with unique ids", () => {
+    const first = newAiHttpHeader();
+    const second = newAiHttpHeader();
+    expect(first.id).not.toBe("");
+    expect(first.id).not.toBe(second.id);
+    expect(first).toEqual({ id: first.id, name: "", value: "" });
+  });
+
+  it("validates header names", () => {
+    expect(isValidAiHttpHeaderName("X-Custom-Token")).toBe(true);
+    expect(isValidAiHttpHeaderName("authorization")).toBe(true);
+    expect(isValidAiHttpHeaderName("  X-Foo  ")).toBe(true);
+    expect(isValidAiHttpHeaderName("")).toBe(false);
+    expect(isValidAiHttpHeaderName("   ")).toBe(false);
+    expect(isValidAiHttpHeaderName("not a header")).toBe(false);
+    expect(isValidAiHttpHeaderName("X-Foo:bar")).toBe(false);
+    expect(isValidAiHttpHeaderName("X-Foo\r\nbar")).toBe(false);
+  });
+
+  it("normalizes rows by trimming, dropping blanks, and deduping last-wins", () => {
+    expect(
+      normalizeAiHttpHeaders([
+        { id: "a", name: "  X-Foo  ", value: "  one  " },
+        { id: "b", name: "x-foo", value: "two" },
+        { id: "c", name: "", value: "dropped" },
+        { id: "d", name: "X-Empty", value: "" },
+        { id: "e", name: "not a header", value: "dropped" },
+      ]),
+    ).toEqual([{ id: "b", name: "x-foo", value: "two" }]);
+  });
+
+  it("detects duplicate names case-insensitively", () => {
+    expect(
+      duplicateAiHttpHeaderNames([
+        { id: "a", name: "X-Foo", value: "1" },
+        { id: "b", name: "x-foo", value: "2" },
+        { id: "c", name: "X-Bar", value: "3" },
+      ]),
+    ).toEqual(new Set(["a", "b"]));
+    expect(duplicateAiHttpHeaderNames([{ id: "a", name: "X-Foo", value: "1" }])).toEqual(new Set());
+  });
+
+  it("reads headers from credentials with legacy shapes", () => {
+    expect(credentialExtraHeaders(null)).toEqual([]);
+    expect(credentialExtraHeaders({})).toEqual([]);
+    expect(
+      credentialExtraHeaders({
+        extra_headers: [{ id: "h", name: "X-Foo", value: "bar" }],
+      }),
+    ).toEqual([{ id: "h", name: "X-Foo", value: "bar" }]);
   });
 });

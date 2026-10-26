@@ -84,10 +84,10 @@ pub use quick_command::{
 #[allow(unused_imports)]
 pub use settings::{
     AI_REQUEST_USER_AGENT_DEFAULT, ActionLinksMatcherSettings, AgentCommandExecutionMode,
-    AiAgentKind, AiApiFormat, AiBackendKind, AiCustomActionConfig, AiMode, AiModelConfigItem,
-    AiModelSource, AiPermissionMode, AiProviderApiProtocol, AiProviderCredential, AiProviderKind,
-    AiProviderProfile, AiProxyMode, AiProxyProtocol, AiProxySettings, AiReasoningEffort,
-    AiSettings, AppSettings, AppearanceSettings, ClaudeCodeIntegrationSettings,
+    AiAgentKind, AiApiFormat, AiBackendKind, AiCustomActionConfig, AiHttpHeader, AiMode,
+    AiModelConfigItem, AiModelSource, AiPermissionMode, AiProviderApiProtocol, AiProviderCredential,
+    AiProviderKind, AiProviderProfile, AiProxyMode, AiProxyProtocol, AiProxySettings,
+    AiReasoningEffort, AiSettings, AppSettings, AppearanceSettings, ClaudeCodeIntegrationSettings,
     CodexIntegrationSettings, CodexThreadMode, DiagnosticsLogLevel, DiagnosticsSettings,
     ExternalMcpSessionScope, ExternalMcpSettings, GeneralSettings, InteractionSettings,
     KeywordHighlightRule, McpTerminalDisplayMode, ProxySettings, RecordingSettings, RiskLevel,

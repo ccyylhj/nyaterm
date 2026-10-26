@@ -204,6 +204,7 @@ pub fn run() {
             cmd::ai::test_ai_provider_connection,
             cmd::ai::test_ai_model_connection,
             cmd::ai::reveal_ai_provider_api_key,
+            cmd::ai::reveal_ai_provider_header_value,
             cmd::ai::cancel_ai_chat_stream,
             cmd::ai::detect_codex_cli,
             cmd::ai::get_codex_account_status,

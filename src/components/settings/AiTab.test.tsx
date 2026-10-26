@@ -377,4 +377,65 @@ describe("AI provider settings", () => {
     expect(currentSettings.models.some((model) => model.name === "late-model")).toBe(false);
     expect(within(openai).getByLabelText("ai.connectionStatus.idle")).toBeTruthy();
   });
+
+  it("adds, edits, and removes custom request headers", () => {
+    render(<Harness initial={settingsWithProviders()} />);
+
+    const section = screen
+      .getByText("ai.customHeaderTitle")
+      .closest("div.grid") as HTMLElement;
+    const inSection = () => within(section);
+    fireEvent.click(screen.getByRole("button", { name: "ai.customHeaderAdd" }));
+    fireEvent.click(screen.getByRole("button", { name: "ai.customHeaderAdd" }));
+
+    const names = inSection().getAllByPlaceholderText("ai.customHeaderName");
+    const values = inSection().getAllByPlaceholderText("ai.customHeaderValue");
+    expect(names).toHaveLength(2);
+    fireEvent.change(names[0], { target: { value: "X-Custom-Token" } });
+    fireEvent.change(values[0], { target: { value: "secret-1" } });
+    fireEvent.change(names[1], { target: { value: "x-custom-token" } });
+    fireEvent.change(values[1], { target: { value: "secret-2" } });
+
+    expect(currentSettings.provider_credentials[0].extra_headers).toHaveLength(2);
+    expect(inSection().getAllByText("ai.customHeaderNameDuplicate")).toHaveLength(2);
+
+    fireEvent.change(names[1], { target: { value: "X-Other" } });
+    expect(inSection().queryByText("ai.customHeaderNameDuplicate")).toBeNull();
+    expect(currentSettings.provider_credentials[0].extra_headers).toEqual([
+      expect.objectContaining({ name: "X-Custom-Token", value: "secret-1" }),
+      expect.objectContaining({ name: "X-Other", value: "secret-2" }),
+    ]);
+
+    fireEvent.change(names[0], { target: { value: "not a header" } });
+    expect(inSection().getByText("ai.customHeaderNameInvalid")).toBeTruthy();
+
+    const deletes = inSection().getAllByRole("button", { name: "common.delete" });
+    expect(deletes).toHaveLength(2);
+    fireEvent.click(deletes[0]);
+    expect(currentSettings.provider_credentials[0].extra_headers).toHaveLength(1);
+    expect(currentSettings.provider_credentials[0].extra_headers?.[0].name).toBe("X-Other");
+  });
+
+  it("includes custom headers in the provider connection test payload", async () => {
+    invokeMock.mockResolvedValue([]);
+    const initial = settingsWithProviders();
+    initial.provider_credentials[0].extra_headers = [
+      { id: "h1", name: "X-Custom-Token", value: "secret-1" },
+    ];
+    render(<Harness initial={initial} />);
+
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "ai.connectionTest" })),
+    );
+    expect(invokeMock).toHaveBeenCalledWith("test_ai_provider_connection", {
+      aiSettings: expect.objectContaining({
+        provider_credentials: expect.arrayContaining([
+          expect.objectContaining({
+            extra_headers: [{ id: "h1", name: "X-Custom-Token", value: "secret-1" }],
+          }),
+        ]),
+      }),
+      credentialId: initial.provider_credentials[0].id,
+    });
+  });
 });
