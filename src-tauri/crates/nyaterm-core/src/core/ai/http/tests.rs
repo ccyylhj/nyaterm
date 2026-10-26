@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 
 use super::super::{model, responses};
 use crate::config::{
-    AiApiFormat, AiBackendKind, AiModelConfigItem, AiModelSource, AiProviderApiProtocol,
-    AiProviderKind,
+    AiApiFormat, AiBackendKind, AiHttpHeader, AiModelConfigItem, AiModelSource,
+    AiProviderApiProtocol, AiProviderKind,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -102,6 +102,112 @@ fn resolved(settings: &AiSettings) -> model::ResolvedAiModel {
         api_format: settings.provider_credentials[0].api_format.clone(),
         credential: Some(settings.provider_credentials[0].clone()),
     }
+}
+
+fn custom_header_settings(port: u16) -> AiSettings {
+    let mut settings = AiSettings::default();
+    settings.proxy.mode = AiProxyMode::Direct;
+    settings.request_user_agent = "nyaterm-proxy-test".to_string();
+    settings.provider_credentials.truncate(1);
+    let credential = &mut settings.provider_credentials[0];
+    credential.id = "custom-headers".to_string();
+    credential.enabled = true;
+    credential.provider_kind = AiProviderKind::OpenaiCompatible;
+    credential.api_protocol = Some(AiProviderApiProtocol::OpenaiCompatible);
+    credential.base_url = Some(format!("http://127.0.0.1:{port}/v1/"));
+    credential.api_key = Some("provider-key".to_string());
+    credential.extra_headers = vec![
+        AiHttpHeader {
+            id: "h1".to_string(),
+            name: "X-Custom-Token".to_string(),
+            value: "secret-1".to_string(),
+        },
+        AiHttpHeader {
+            id: "h2".to_string(),
+            name: "authorization".to_string(),
+            value: "Bearer override".to_string(),
+        },
+    ];
+    settings.models = vec![AiModelConfigItem {
+        id: "custom-headers:chat-test".to_string(),
+        name: "chat-test".to_string(),
+        backend: AiBackendKind::Genai,
+        provider_kind: Some(AiProviderKind::OpenaiCompatible),
+        credential_id: Some(credential.id.clone()),
+        enabled: true,
+        source: AiModelSource::Manual,
+        last_seen_at: None,
+        supported_reasoning_efforts: None,
+    }];
+    settings
+}
+
+#[tokio::test]
+async fn custom_headers_are_sent_with_model_discovery_and_override_auth() {
+    let (port, task) = server("application/json", r#"{"data":[{"id":"m"}]}"#).await;
+    let settings = custom_header_settings(port);
+    let names = model::test_provider_connection(&settings, "custom-headers")
+        .await
+        .unwrap();
+    assert_eq!(names, vec!["m"]);
+    let request = task.await.unwrap().to_lowercase();
+    assert!(request.contains("x-custom-token: secret-1"));
+    assert!(request.contains("authorization: bearer override"));
+    assert!(!request.contains("provider-key"));
+}
+
+#[tokio::test]
+async fn custom_headers_are_sent_with_genai_chat_and_override_auth() {
+    let (port, task) = server("application/json", CHAT_REPLY).await;
+    let settings = custom_header_settings(port);
+    let resolved_model = model::ResolvedAiModel {
+        credential: Some(settings.provider_credentials[0].clone()),
+        ..resolved(&settings)
+    };
+    let client = model::build_client(&resolved_model, &settings).unwrap();
+    let options = model::build_chat_options(&settings, Some(&resolved_model)).unwrap();
+    let response = tokio::time::timeout(
+        WAIT,
+        client.exec_chat(
+            "chat-test",
+            ChatRequest::new(vec![ChatMessage::user("hello")]),
+            Some(&options),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(response.content.first_text(), Some("OK"));
+    let request = task.await.unwrap().to_lowercase();
+    assert!(request.contains("x-custom-token: secret-1"));
+    assert!(request.contains("authorization: bearer override"));
+    assert!(!request.contains("provider-key"));
+}
+
+#[tokio::test]
+async fn custom_headers_are_sent_with_responses_api_and_override_auth() {
+    let (port, task) = server("application/json", r#"{"id":"resp-test","output":[]}"#).await;
+    let mut settings = custom_header_settings(port);
+    settings.provider_credentials[0].api_format = AiApiFormat::Responses;
+    let resolved_model = model::ResolvedAiModel {
+        api_format: AiApiFormat::Responses,
+        credential: Some(settings.provider_credentials[0].clone()),
+        ..resolved(&settings)
+    };
+    responses::responses_request(
+        &settings,
+        &resolved_model,
+        &json!({"model":"chat-test", "input":"hello"}),
+    )
+    .unwrap()
+    .timeout(WAIT)
+    .send()
+    .await
+    .unwrap();
+    let request = task.await.unwrap().to_lowercase();
+    assert!(request.contains("x-custom-token: secret-1"));
+    assert!(request.contains("authorization: bearer override"));
+    assert!(!request.contains("provider-key"));
 }
 
 #[test]

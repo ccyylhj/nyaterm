@@ -43,6 +43,7 @@ use tables::DATABASE_FILE;
 use util::storage_error;
 
 static STORAGE: OnceLock<Arc<Storage>> = OnceLock::new();
+static STORAGE_INIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug)]
 pub struct Storage {
@@ -366,6 +367,15 @@ pub fn save_master_key_token(token: &str) -> AppResult<()> {
 }
 
 fn storage() -> AppResult<Arc<Storage>> {
+    if let Some(storage) = STORAGE.get() {
+        return Ok(storage.clone());
+    }
+    // Serialize first-time initialization: two threads racing init() would
+    // otherwise open the same redb file concurrently and the loser would fail
+    // with a lock error.
+    let _guard = STORAGE_INIT_LOCK
+        .lock()
+        .map_err(|_| AppError::Storage("redb storage init lock was poisoned".to_string()))?;
     if let Some(storage) = STORAGE.get() {
         return Ok(storage.clone());
     }

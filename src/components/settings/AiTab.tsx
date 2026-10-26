@@ -49,13 +49,19 @@ import {
   aiModelIdForCredential,
   aiModelIdForProvider,
   BUILTIN_PROVIDERS,
+  credentialExtraHeaders,
   DEFAULT_AI_SETTINGS,
   DEFAULT_MODEL_REASONING_EFFORTS,
+  duplicateAiHttpHeaderNames,
   getCustomProviderBaseUrlPlaceholder,
   getProviderLabel,
   isBuiltinProvider,
+  isValidAiHttpHeaderName,
   localizeDefaultAiAction,
+  MAX_AI_CUSTOM_HEADERS,
   MODEL_REASONING_EFFORTS,
+  newAiHttpHeader,
+  normalizeAiHttpHeaders,
   supportsApiFormatSelection,
 } from "@/lib/aiSettings";
 import { writeClipboardText } from "@/lib/clipboard";
@@ -65,6 +71,7 @@ import { invoke } from "@/lib/invoke";
 import { getOwnerMainWindowLabel } from "@/lib/windowManager";
 import type {
   AICustomActionConfig,
+  AIHttpHeader,
   AIModelConfigItem,
   AIModelReasoningEffort,
   AIProviderApiProtocol,
@@ -107,6 +114,7 @@ function newCredential(): AIProviderCredential {
     api_format: "chat_completions",
     base_url: "",
     api_key: "",
+    extra_headers: [],
     enabled: true,
   };
 }
@@ -1176,6 +1184,10 @@ export function AiModelsTab() {
   } | null>(null);
   const [revealingProviderApiKey, setRevealingProviderApiKey] = useState(false);
   const providerApiKeyRevealGeneration = useRef(0);
+  const [showHeaderValues, setShowHeaderValues] = useState<Record<string, boolean>>({});
+  const [revealedHeaderValues, setRevealedHeaderValues] = useState<Record<string, string>>({});
+  const [revealingHeaderId, setRevealingHeaderId] = useState<string | null>(null);
+  const headerRevealGeneration = useRef(0);
   const [providerNameInput, setProviderNameInput] = useState<{
     credentialId: string;
     value: string;
@@ -1298,6 +1310,8 @@ export function AiModelsTab() {
     selectedProviderCredential.provider_kind !== "openai_compatible";
   const selectedProviderApiKeyMissing =
     selectedProviderApiKeyRequired && !selectedProviderCredential?.api_key?.trim();
+  const selectedProviderCustomHeaders = credentialExtraHeaders(selectedProviderCredential);
+  const duplicateCustomHeaderIds = duplicateAiHttpHeaderNames(selectedProviderCustomHeaders);
   // biome-ignore lint/correctness/useExhaustiveDependencies: These transient fields belong to the selected account.
   useEffect(() => {
     setProviderNameInput(null);
@@ -1310,6 +1324,10 @@ export function AiModelsTab() {
     setShowProviderApiKey(false);
     setRevealedProviderApiKey(null);
     setRevealingProviderApiKey(false);
+    headerRevealGeneration.current += 1;
+    setShowHeaderValues({});
+    setRevealedHeaderValues({});
+    setRevealingHeaderId(null);
   }, [selectedProviderCredential?.id]);
 
   const hideProviderApiKey = () => {
@@ -1349,6 +1367,91 @@ export function AiModelsTab() {
         setRevealingProviderApiKey(false);
       }
     }
+  };
+
+  const headerDisplayValue = (header: AIHttpHeader) => {
+    if (
+      showHeaderValues[header.id] &&
+      isCloudSecretMasked(header.value) &&
+      revealedHeaderValues[header.id] !== undefined
+    ) {
+      return revealedHeaderValues[header.id];
+    }
+    return secretInputValue(header.value);
+  };
+
+  const toggleHeaderValueVisibility = async (header: AIHttpHeader) => {
+    if (!selectedProviderCredential) return;
+    if (showHeaderValues[header.id]) {
+      setShowHeaderValues((current) => ({ ...current, [header.id]: false }));
+      return;
+    }
+    if (!isCloudSecretMasked(header.value)) {
+      setShowHeaderValues((current) => ({ ...current, [header.id]: true }));
+      return;
+    }
+    if (providerDraft) {
+      setShowHeaderValues((current) => ({ ...current, [header.id]: true }));
+      return;
+    }
+
+    const credentialId = selectedProviderCredential.id;
+    const headerId = header.id;
+    const generation = ++headerRevealGeneration.current;
+    setRevealingHeaderId(headerId);
+    try {
+      const value = await invoke<string>("reveal_ai_provider_header_value", {
+        credentialId,
+        headerId,
+      });
+      if (headerRevealGeneration.current !== generation) return;
+      setRevealedHeaderValues((current) => ({ ...current, [headerId]: value }));
+      setShowHeaderValues((current) => ({ ...current, [headerId]: true }));
+    } catch (error) {
+      if (headerRevealGeneration.current === generation) {
+        toast.error(getErrorMessage(error));
+      }
+    } finally {
+      if (headerRevealGeneration.current === generation) {
+        setRevealingHeaderId(null);
+      }
+    }
+  };
+
+  const updateCustomHeader = (headerId: string, patch: Partial<AIHttpHeader>) => {
+    if (!selectedProviderCredential) return;
+    const headers = credentialExtraHeaders(selectedProviderCredential).map((header) =>
+      header.id === headerId ? { ...header, ...patch } : header,
+    );
+    if ("value" in patch) {
+      setRevealedHeaderValues((current) => {
+        if (!(headerId in current)) return current;
+        const next = { ...current };
+        delete next[headerId];
+        return next;
+      });
+    }
+    updateSelectedProviderCredential(selectedProviderCredential.id, {
+      extra_headers: headers,
+    });
+  };
+
+  const addCustomHeader = () => {
+    if (!selectedProviderCredential) return;
+    const headers = credentialExtraHeaders(selectedProviderCredential);
+    if (headers.length >= MAX_AI_CUSTOM_HEADERS) return;
+    updateSelectedProviderCredential(selectedProviderCredential.id, {
+      extra_headers: [...headers, newAiHttpHeader()],
+    });
+  };
+
+  const removeCustomHeader = (headerId: string) => {
+    if (!selectedProviderCredential) return;
+    updateSelectedProviderCredential(selectedProviderCredential.id, {
+      extra_headers: credentialExtraHeaders(selectedProviderCredential).filter(
+        (header) => header.id !== headerId,
+      ),
+    });
   };
 
   const visibleModels = useMemo(() => {
@@ -1698,7 +1801,8 @@ export function AiModelsTab() {
       "base_url" in patch ||
       "api_key" in patch ||
       "api_protocol" in patch ||
-      "api_format" in patch
+      "api_format" in patch ||
+      "extra_headers" in patch
     ) {
       setTestedDraftModels(null);
     }
@@ -1876,6 +1980,7 @@ export function AiModelsTab() {
       name,
       base_url: draftCredential.base_url?.trim() ?? "",
       api_key: draftCredential.api_key?.trim() ?? "",
+      extra_headers: normalizeAiHttpHeaders(credentialExtraHeaders(draftCredential)),
       enabled: true,
     };
     const existingIndex = ai.provider_credentials.findIndex((item) => item.id === credentialId);
@@ -1957,6 +2062,10 @@ export function AiModelsTab() {
 
   const deleteSelectedProvider = () => {
     if (!selectedProviderCredential) return;
+    headerRevealGeneration.current += 1;
+    setShowHeaderValues({});
+    setRevealedHeaderValues({});
+    setRevealingHeaderId(null);
     if (providerDraft) {
       setProviderDraft(null);
       setTestedDraftModels(null);
@@ -2572,6 +2681,94 @@ export function AiModelsTab() {
                   {showProviderValidation && selectedProviderApiKeyMissing ? (
                     <p className="text-xs text-destructive">{t("ai.providerApiKeyRequired")}</p>
                   ) : null}
+                </div>
+              </div>
+              <div className="grid gap-2 border-b border-border/60 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,2.2fr)] sm:items-start">
+                <Label className="pt-2 text-xs font-normal">{t("ai.customHeaderTitle")}</Label>
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">{t("ai.customHeaderDesc")}</p>
+                  {selectedProviderCustomHeaders.map((header) => {
+                    const nameInvalid =
+                      header.name.trim().length > 0 && !isValidAiHttpHeaderName(header.name);
+                    const nameDuplicate = duplicateCustomHeaderIds.has(header.id);
+                    const valueShown = !!showHeaderValues[header.id];
+                    return (
+                      <div key={header.id} className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <Input
+                            value={header.name}
+                            placeholder={t("ai.customHeaderName")}
+                            aria-label={t("ai.customHeaderName")}
+                            aria-invalid={nameInvalid || nameDuplicate}
+                            className="h-9 min-w-0 flex-1 rounded-lg font-mono text-sm"
+                            onChange={(event) =>
+                              updateCustomHeader(header.id, { name: event.target.value })
+                            }
+                          />
+                          <div className="relative min-w-0 flex-[1.4]">
+                            <Input
+                              data-custom-password-reveal
+                              type={valueShown ? "text" : "password"}
+                              value={headerDisplayValue(header)}
+                              placeholder={
+                                isCloudSecretMasked(header.value)
+                                  ? "••••••••"
+                                  : t("ai.customHeaderValue")
+                              }
+                              aria-label={t("ai.customHeaderValue")}
+                              className="h-9 rounded-lg pr-10 font-mono text-sm"
+                              onChange={(event) =>
+                                updateCustomHeader(header.id, { value: event.target.value })
+                              }
+                            />
+                            <Button
+                              type="button"
+                              size="icon-sm"
+                              variant="ghost"
+                              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+                              title={t(valueShown ? "ai.hideHeaderValue" : "ai.showHeaderValue")}
+                              aria-label={t(
+                                valueShown ? "ai.hideHeaderValue" : "ai.showHeaderValue",
+                              )}
+                              disabled={revealingHeaderId === header.id}
+                              onClick={() => void toggleHeaderValueVisibility(header)}
+                            >
+                              {valueShown ? (
+                                <MdVisibilityOff className="size-3.5" />
+                              ) : (
+                                <MdVisibility className="size-3.5" />
+                              )}
+                            </Button>
+                          </div>
+                          <DeleteIconButton
+                            title={t("common.delete")}
+                            onDelete={() => removeCustomHeader(header.id)}
+                          />
+                        </div>
+                        {nameInvalid ? (
+                          <p className="text-xs text-destructive">
+                            {t("ai.customHeaderNameInvalid")}
+                          </p>
+                        ) : null}
+                        {nameDuplicate ? (
+                          <p className="text-xs text-destructive">
+                            {t("ai.customHeaderNameDuplicate")}
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="rounded-lg"
+                    disabled={selectedProviderCustomHeaders.length >= MAX_AI_CUSTOM_HEADERS}
+                    onClick={addCustomHeader}
+                  >
+                    <MdAdd />
+                    {t("ai.customHeaderAdd")}
+                  </Button>
                 </div>
               </div>
               <div className="grid gap-2 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,2.2fr)] sm:items-center">

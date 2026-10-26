@@ -1,5 +1,6 @@
 import type {
   AICustomActionConfig,
+  AIHttpHeader,
   AIModelConfigItem,
   AIModelDiscovery,
   AIModelReasoningEffort,
@@ -483,6 +484,70 @@ export function supportsApiFormatSelection(
   return credential.provider_kind === "openai" || credential.provider_kind === "openai_compatible";
 }
 
+export const MAX_AI_CUSTOM_HEADERS = 32;
+export const MAX_AI_CUSTOM_HEADER_NAME_LEN = 256;
+export const AI_HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+export function isValidAiHttpHeaderName(name: string): boolean {
+  const trimmed = name.trim();
+  return (
+    trimmed.length > 0 &&
+    trimmed.length <= MAX_AI_CUSTOM_HEADER_NAME_LEN &&
+    AI_HTTP_HEADER_NAME_PATTERN.test(trimmed)
+  );
+}
+
+export function newAiHttpHeader(): AIHttpHeader {
+  return {
+    id: `header-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+    name: "",
+    value: "",
+  };
+}
+
+export function credentialExtraHeaders(
+  credential: Pick<AIProviderCredential, "extra_headers"> | null | undefined,
+): AIHttpHeader[] {
+  return Array.isArray(credential?.extra_headers) ? credential.extra_headers : [];
+}
+
+/** Trims rows, drops blank/invalid names, dedupes case-insensitively (last wins). */
+export function normalizeAiHttpHeaders(headers: AIHttpHeader[]): AIHttpHeader[] {
+  const normalized: AIHttpHeader[] = [];
+  const indexByName = new Map<string, number>();
+  for (const header of headers) {
+    const name = header.name.trim();
+    if (!isValidAiHttpHeaderName(name)) continue;
+    const value = header.value.trim();
+    if (value.length === 0) continue;
+    const key = name.toLowerCase();
+    const row = { ...header, name, value };
+    const existing = indexByName.get(key);
+    if (existing !== undefined) normalized[existing] = row;
+    else {
+      indexByName.set(key, normalized.length);
+      normalized.push(row);
+    }
+  }
+  return normalized.slice(0, MAX_AI_CUSTOM_HEADERS);
+}
+
+export function duplicateAiHttpHeaderNames(headers: AIHttpHeader[]): Set<string> {
+  const seen = new Map<string, string>();
+  const duplicates = new Set<string>();
+  for (const header of headers) {
+    const key = header.name.trim().toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) {
+      duplicates.add(seen.get(key) as string);
+      duplicates.add(header.id);
+    } else {
+      seen.set(key, header.id);
+    }
+  }
+  return duplicates;
+}
+
 const DEFAULT_PROVIDER_PROFILES: AIProviderProfile[] = [
   {
     id: "openai",
@@ -675,12 +740,13 @@ function credentialFromProfile(profile: AIProviderProfile): AIProviderCredential
     api_format: "chat_completions",
     base_url: profile.base_url,
     api_key: profile.api_key,
+    extra_headers: [],
     enabled: profile.enabled,
   };
 }
 
 export const DEFAULT_AI_SETTINGS: AISettings = {
-  schema_version: 7,
+  schema_version: 8,
   enabled: false,
   context_line_limit: 200,
   redaction_enabled: true,

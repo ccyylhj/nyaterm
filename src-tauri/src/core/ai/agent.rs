@@ -1013,7 +1013,7 @@ async fn run_agent_tool_step(
 ) -> AppResult<AgentToolInvocation> {
     let client = build_client(resolved_model, settings)?;
     let chat_req = ChatRequest::new(conversation.to_vec()).with_tools(agent_tools());
-    let chat_options = build_chat_options(settings)
+    let chat_options = build_chat_options(settings, Some(resolved_model))?
         .with_capture_tool_calls(true)
         .with_tool_choice(ToolChoice::Required);
 
@@ -1143,7 +1143,7 @@ async fn run_agent_legacy_json_step(
 
     let client = build_client(resolved_model, settings)?;
     let chat_req = ChatRequest::new(legacy_conversation);
-    let chat_options = build_chat_options(settings);
+    let chat_options = build_chat_options(settings, Some(resolved_model))?;
 
     let stream_result = tokio::time::timeout(
         Duration::from_millis(settings.timeout_ms),

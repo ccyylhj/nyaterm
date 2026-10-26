@@ -13,7 +13,7 @@ mod translation;
 
 pub use ai::{
     AI_REQUEST_USER_AGENT_DEFAULT, AgentCommandExecutionMode, AiAgentKind, AiApiFormat,
-    AiBackendKind, AiCustomActionConfig, AiMode, AiModelConfigItem, AiModelSource,
+    AiBackendKind, AiCustomActionConfig, AiHttpHeader, AiMode, AiModelConfigItem, AiModelSource,
     AiPermissionMode, AiProviderApiProtocol, AiProviderCredential, AiProviderKind,
     AiProviderProfile, AiProxyMode, AiProxyProtocol, AiProxySettings, AiReasoningEffort,
     AiSettings, ClaudeCodeIntegrationSettings, CodexIntegrationSettings, CodexThreadMode,

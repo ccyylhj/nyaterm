@@ -1579,6 +1579,12 @@ export interface AIProviderProfile {
   enabled: boolean;
 }
 
+export interface AIHttpHeader {
+  id: string;
+  name: string;
+  value: string;
+}
+
 export interface AIProviderCredential {
   id: string;
   name: string;
@@ -1588,6 +1594,7 @@ export interface AIProviderCredential {
   api_format: AIApiFormat;
   base_url?: string | null;
   api_key?: string | null;
+  extra_headers?: AIHttpHeader[] | null;
   enabled: boolean;
 }
 

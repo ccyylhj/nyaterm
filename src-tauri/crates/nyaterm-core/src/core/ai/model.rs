@@ -5,7 +5,8 @@ use genai::adapter::AdapterKind;
 use genai::chat::{ChatMessage, ChatOptions, ChatRequest, ReasoningEffort};
 use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
 use genai::{Client, ModelIden};
-use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
+use std::str::FromStr;
 use serde_json::Value;
 
 use crate::config::{
@@ -57,7 +58,10 @@ pub fn resolve_request_model_config(
         .ok_or_else(|| AppError::Config("No enabled AI model configured".to_string()))
 }
 
-pub fn build_chat_options(settings: &AiSettings) -> ChatOptions {
+pub fn build_chat_options(
+    settings: &AiSettings,
+    model: Option<&ResolvedAiModel>,
+) -> AppResult<ChatOptions> {
     let mut options = ChatOptions::default()
         .with_capture_reasoning_content(true)
         .with_normalize_reasoning_content(true);
@@ -68,7 +72,14 @@ pub fn build_chat_options(settings: &AiSettings) -> ChatOptions {
         options = options.with_extra_body(serde_json::json!({ "reasoning_effort": "ultra" }));
     }
 
-    options
+    if let Some(model) = model {
+        let headers = custom_headers_for_credential(model.credential.as_ref())?;
+        if !headers.is_empty() {
+            options = options.with_extra_headers(headers);
+        }
+    }
+
+    Ok(options)
 }
 
 fn genai_reasoning_effort(value: &AiReasoningEffort) -> Option<ReasoningEffort> {
@@ -327,6 +338,97 @@ pub fn ai_request_headers(settings: &AiSettings) -> AppResult<HeaderMap> {
     Ok(headers)
 }
 
+/// Returns the exact casing genai uses for SDK-managed auth headers so a
+/// user-configured override replaces the managed value instead of being sent
+/// alongside it (genai merges extra headers case-sensitively).
+fn canonical_custom_header_name(name: &str) -> &str {
+    if name.eq_ignore_ascii_case("authorization") {
+        "Authorization"
+    } else if name.eq_ignore_ascii_case("x-api-key") {
+        "x-api-key"
+    } else if name.eq_ignore_ascii_case("x-goog-api-key") {
+        "x-goog-api-key"
+    } else if name.eq_ignore_ascii_case("anthropic-version") {
+        "anthropic-version"
+    } else {
+        name
+    }
+}
+
+/// Collects validated custom headers for a credential. Rows are trimmed,
+/// blank rows are skipped, and later rows win on case-insensitive name
+/// conflicts. Values must be visible ASCII.
+pub fn custom_headers_for_credential(
+    credential: Option<&AiProviderCredential>,
+) -> AppResult<Vec<(String, String)>> {
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut index_by_name: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let rows = credential
+        .map(|credential| credential.extra_headers.as_slice())
+        .unwrap_or_default();
+    for header in rows {
+        let name = header.name.trim();
+        let value = header.value.trim();
+        if name.is_empty() || value.is_empty() {
+            continue;
+        }
+        let canonical = canonical_custom_header_name(name);
+        // HeaderName normalizes to lowercase; it is only used for validation
+        // here so the canonical casing above is preserved for genai's
+        // case-sensitive header merge.
+        let parsed_name = HeaderName::from_str(canonical).map_err(|error| {
+            AppError::Config(format!("Invalid custom AI header name '{name}': {error}"))
+        })?;
+        let parsed_value = HeaderValue::from_str(value).map_err(|error| {
+            AppError::Config(format!("Invalid custom AI header value for '{name}': {error}"))
+        })?;
+        let value_text = parsed_value.to_str().map_err(|_| {
+            AppError::Config(format!(
+                "Custom AI header '{name}' value must be visible ASCII"
+            ))
+        })?;
+        let pair = (canonical.to_string(), value_text.to_string());
+        let key = parsed_name.as_str().to_ascii_lowercase();
+        if let Some(&index) = index_by_name.get(&key) {
+            headers[index] = pair;
+        } else {
+            index_by_name.insert(key, headers.len());
+            headers.push(pair);
+        }
+    }
+    Ok(headers)
+}
+
+fn custom_header_map(
+    credential: Option<&AiProviderCredential>,
+) -> AppResult<HeaderMap> {
+    let mut map = HeaderMap::new();
+    for (name, value) in custom_headers_for_credential(credential)? {
+        let parsed_name = HeaderName::from_str(&name).map_err(|error| {
+            AppError::Config(format!("Invalid custom AI header name '{name}': {error}"))
+        })?;
+        let parsed_value = HeaderValue::from_str(&value).map_err(|error| {
+            AppError::Config(format!("Invalid custom AI header value for '{name}': {error}"))
+        })?;
+        map.insert(parsed_name, parsed_value);
+    }
+    Ok(map)
+}
+
+/// Applies a credential's custom headers to a raw reqwest request. Applied
+/// after auth headers so user overrides win.
+pub fn apply_custom_headers(
+    builder: reqwest::RequestBuilder,
+    credential: Option<&AiProviderCredential>,
+) -> AppResult<reqwest::RequestBuilder> {
+    let map = custom_header_map(credential)?;
+    if map.is_empty() {
+        return Ok(builder);
+    }
+    Ok(builder.headers(map))
+}
+
 fn adapter_kind(kind: &AiProviderKind) -> AdapterKind {
     match kind {
         AiProviderKind::Openai | AiProviderKind::OpenaiCompatible => AdapterKind::OpenAI,
@@ -479,13 +581,14 @@ async fn fetch_credential_model_names(
             });
     match protocol {
         AiProviderApiProtocol::OpenaiCompatible => {
-            fetch_openai_compatible_models(base_url, api_key, settings).await
+            fetch_openai_compatible_models(base_url, api_key, settings, Some(credential)).await
         }
         AiProviderApiProtocol::Anthropic => {
             fetch_provider_model_names(
                 base_url,
                 api_key,
                 settings,
+                Some(credential),
                 "models",
                 Some(("limit", "1000")),
                 "data",
@@ -499,6 +602,7 @@ async fn fetch_credential_model_names(
                 base_url,
                 api_key,
                 settings,
+                Some(credential),
                 "models",
                 Some(("pageSize", "1000")),
                 "models",
@@ -512,6 +616,7 @@ async fn fetch_credential_model_names(
                 base_url,
                 api_key,
                 settings,
+                Some(credential),
                 "api/tags",
                 None,
                 "models",
@@ -527,6 +632,7 @@ async fn fetch_provider_model_names(
     base_url: &str,
     api_key: Option<&str>,
     settings: &AiSettings,
+    credential: Option<&AiProviderCredential>,
     path: &str,
     query: Option<(&str, &str)>,
     response_field: &str,
@@ -563,6 +669,7 @@ async fn fetch_provider_model_names(
         } else if protocol == AiProviderApiProtocol::Anthropic {
             request = request.header("anthropic-version", "2023-06-01");
         }
+        request = apply_custom_headers(request, credential)?;
         let response = request.send().await.map_err(|error| {
             AppError::Config(format!("Failed to fetch models from {url}: {error}"))
         })?;
@@ -666,6 +773,7 @@ async fn fetch_openai_compatible_models(
     base_url: &str,
     api_key: Option<&str>,
     settings: &AiSettings,
+    credential: Option<&AiProviderCredential>,
 ) -> AppResult<Vec<String>> {
     let url = openai_compatible_models_url(base_url)?;
     let client = build_http_client(settings)?;
@@ -673,6 +781,7 @@ async fn fetch_openai_compatible_models(
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
     }
+    let req = apply_custom_headers(req, credential)?;
     let resp = req
         .timeout(Duration::from_secs(15))
         .send()
@@ -842,6 +951,7 @@ mod tests {
             api_format: AiApiFormat::default(),
             base_url: Some("https://api.example.com/v1/".to_string()),
             api_key: api_key.map(str::to_string),
+            extra_headers: Vec::new(),
             enabled: true,
         }
     }
@@ -1096,9 +1206,102 @@ mod tests {
     #[test]
     fn default_reasoning_effort_auto_is_not_sent_to_genai() {
         let settings = AiSettings::default();
-        let options = build_chat_options(&settings);
+        let options = build_chat_options(&settings, None).unwrap();
 
         assert!(options.reasoning_effort.is_none());
+        assert!(options.extra_headers.is_none());
+    }
+
+    #[test]
+    fn custom_headers_attach_to_chat_options_with_canonical_auth_casing() {
+        let mut settings = AiSettings::default();
+        let mut credential =
+            test_credential_with_id("credential-headers", AiProviderKind::Openai, Some("key"));
+        credential.extra_headers = vec![
+            crate::config::AiHttpHeader {
+                id: "h1".to_string(),
+                name: "X-Custom-Token".to_string(),
+                value: "secret".to_string(),
+            },
+            crate::config::AiHttpHeader {
+                id: "h2".to_string(),
+                name: "authorization".to_string(),
+                value: "Bearer override".to_string(),
+            },
+        ];
+        settings.provider_credentials = vec![credential];
+        settings.models = vec![AiModelConfigItem {
+            id: "credential-headers:test-model".to_string(),
+            name: "test-model".to_string(),
+            backend: AiBackendKind::Genai,
+            provider_kind: Some(AiProviderKind::Openai),
+            credential_id: Some("credential-headers".to_string()),
+            enabled: true,
+            source: AiModelSource::Manual,
+            last_seen_at: None,
+            supported_reasoning_efforts: None,
+        }];
+        let resolved =
+            resolve_request_model(&settings, &test_request("credential-headers:test-model"))
+                .unwrap();
+
+        let options = build_chat_options(&settings, Some(&resolved)).unwrap();
+        let headers = options.extra_headers.expect("extra headers");
+        let collected: std::collections::HashMap<_, _> = headers.into_iter().collect();
+        assert_eq!(
+            collected.get("X-Custom-Token").map(String::as_str),
+            Some("secret")
+        );
+        // Lowercase "authorization" must replace genai's "Authorization",
+        // not be sent alongside it.
+        assert_eq!(
+            collected.get("Authorization").map(String::as_str),
+            Some("Bearer override")
+        );
+        assert!(!collected.contains_key("authorization"));
+    }
+
+    #[test]
+    fn custom_headers_reject_invalid_names_and_values() {
+        let mut settings = AiSettings::default();
+        let mut credential =
+            test_credential_with_id("credential-headers", AiProviderKind::Openai, Some("key"));
+        credential.extra_headers = vec![crate::config::AiHttpHeader {
+            id: "bad".to_string(),
+            name: "not a header".to_string(),
+            value: "value".to_string(),
+        }];
+        settings.provider_credentials = vec![credential];
+        settings.models = vec![AiModelConfigItem {
+            id: "credential-headers:test-model".to_string(),
+            name: "test-model".to_string(),
+            backend: AiBackendKind::Genai,
+            provider_kind: Some(AiProviderKind::Openai),
+            credential_id: Some("credential-headers".to_string()),
+            enabled: true,
+            source: AiModelSource::Manual,
+            last_seen_at: None,
+            supported_reasoning_efforts: None,
+        }];
+        let resolved =
+            resolve_request_model(&settings, &test_request("credential-headers:test-model"))
+                .unwrap();
+
+        let error = build_chat_options(&settings, Some(&resolved)).unwrap_err();
+        assert!(error.to_string().contains("not a header"));
+
+        let mut settings = AiSettings::default();
+        let mut credential =
+            test_credential_with_id("credential-headers", AiProviderKind::Openai, Some("key"));
+        credential.extra_headers = vec![crate::config::AiHttpHeader {
+            id: "bad".to_string(),
+            name: "X-Bad".to_string(),
+            value: "broken\r\nvalue".to_string(),
+        }];
+        settings.provider_credentials = vec![credential];
+        let credential = settings.provider_credentials.first();
+        let error = custom_headers_for_credential(credential).unwrap_err();
+        assert!(error.to_string().contains("X-Bad"));
     }
 
     #[test]
@@ -1115,7 +1318,7 @@ mod tests {
             let mut settings = AiSettings::default();
             settings.default_reasoning_effort = effort;
 
-            let options = build_chat_options(&settings);
+            let options = build_chat_options(&settings, None).unwrap();
 
             assert_eq!(
                 options
@@ -1186,7 +1389,8 @@ pub async fn test_model_connection(settings: &AiSettings, model_id: &str) -> App
             ChatMessage::system(MODEL_TEST_SYSTEM_PROMPT),
             ChatMessage::user(MODEL_TEST_USER_PROMPT),
         ]);
-        let options = build_chat_options(&settings).with_max_tokens(MODEL_TEST_MAX_OUTPUT_TOKENS);
+        let options =
+            build_chat_options(&settings, Some(&resolved_model))?.with_max_tokens(MODEL_TEST_MAX_OUTPUT_TOKENS);
         client
             .exec_chat(&resolved_model.model_name, request, Some(&options))
             .await

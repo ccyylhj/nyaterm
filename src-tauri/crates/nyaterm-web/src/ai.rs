@@ -46,6 +46,24 @@ pub async fn command(
                 .ok_or(WebError::bad("Provider key not configured"))?;
             Ok(json!(key))
         }
+        "reveal_ai_provider_header_value" => {
+            let settings = config::load_app_settings(&())?.ai;
+            let credential_id = crate::commands::text(args, "credentialId")?;
+            let header_id = crate::commands::text(args, "headerId")?;
+            let value = settings
+                .provider_credentials
+                .iter()
+                .find(|c| c.id == credential_id)
+                .and_then(|c| {
+                    c.extra_headers
+                        .iter()
+                        .find(|h| h.id == header_id)
+                        .map(|h| h.value.as_str())
+                })
+                .filter(|value| !value.is_empty())
+                .ok_or(WebError::bad("Provider header value not configured"))?;
+            Ok(json!(value))
+        }
         "clear_ai_history" => {
             history::clear_ai_history_storage(&())?;
             Ok(Value::Null)
@@ -143,6 +161,7 @@ pub fn supports(command: &str) -> bool {
         "clear_ai_history"
             | "append_ai_audit"
             | "reveal_ai_provider_api_key"
+            | "reveal_ai_provider_header_value"
             | "rebind_ai_session"
             | "test_ai_provider_connection"
             | "refresh_ai_model_settings"
