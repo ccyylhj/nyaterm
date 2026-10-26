@@ -27,35 +27,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin
-            bundle_dir: src-tauri/target/aarch64-apple-darwin/release/bundle
-
-          - platform: macos-latest
-            target: x86_64-apple-darwin
-            args: --target x86_64-apple-darwin
-            bundle_dir: src-tauri/target/x86_64-apple-darwin/release/bundle
-
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            args: ""
-            bundle_dir: src-tauri/target/release/bundle
-
-          - platform: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            args: ""
-            bundle_dir: src-tauri/target/release/bundle
-
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: --bundles nsis,msi
             bundle_dir: src-tauri/target/release/bundle
-
-          - platform: windows-latest
-            target: aarch64-pc-windows-msvc
-            args: --target aarch64-pc-windows-msvc --bundles nsis,msi
-            bundle_dir: src-tauri/target/aarch64-pc-windows-msvc/release/bundle
 
     steps:
       - name: Checkout repository
