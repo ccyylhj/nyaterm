@@ -40,6 +40,15 @@ jobs:
         shell: pwsh
         run: ./scripts/ci/install-nsis.ps1
 
+      - name: Install .NET for WiX
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install WiX
+        shell: pwsh
+        run: ./scripts/ci/install-wix.ps1
+
       - name: Prepare bundled ConPTY
         run: python scripts/release/prepare_conpty.py
 
