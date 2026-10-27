@@ -1,0 +1,56 @@
+name: Fork Build (unsigned)
+
+# Personal-fork packaging for the GPUI branch: no signing keys, no releases,
+# no version checks, no mandatory test gate. Run manually from
+# Actions -> Fork Build (unsigned) -> Run workflow, then download the
+# NyaTerm-windows-x64 artifact below the run.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-key: fork-build-windows-x64
+          save-cache: always
+
+      - name: Install NSIS
+        shell: pwsh
+        run: ./scripts/ci/install-nsis.ps1
+
+      - name: Prepare bundled ConPTY
+        run: python scripts/release/prepare_conpty.py
+
+      - name: Package native application
+        shell: bash
+        run: python scripts/release/package_native.py x86_64-pc-windows-msvc
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NyaTerm-windows-x64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
